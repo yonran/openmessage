@@ -20,6 +20,15 @@ func passiveMode() bool {
 	return strings.TrimSpace(os.Getenv("OPENMESSAGE_PASSIVE")) == "1"
 }
 
+// inactiveMode reports whether the periodic ditto-activity ping should report
+// isActive=false (libgm.Client.ReportInactive) instead of true. The real web
+// client reports false when backgrounded, which is what makes Google keep
+// notifying the phone; this is the runtime lever for that. Opt-in via
+// OPENMESSAGE_INACTIVE=1. Keep OPENMESSAGE_PASSIVE off — the ping must still run.
+func inactiveMode() bool {
+	return strings.TrimSpace(os.Getenv("OPENMESSAGE_INACTIVE")) == "1"
+}
+
 type Client struct {
 	GM     *libgm.Client
 	Logger zerolog.Logger
@@ -41,6 +50,7 @@ func NewFromSession(sessionData *SessionData, logger zerolog.Logger) (*Client, e
 
 	cli := libgm.NewClient(authData, pushKeys, logger)
 	cli.DontMarkActive = passiveMode()
+	cli.ReportInactive = inactiveMode()
 	return &Client{GM: cli, Logger: logger}, nil
 }
 
