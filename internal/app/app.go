@@ -112,20 +112,20 @@ func (p *BackfillProgress) snapshot() BackfillSnapshot {
 }
 
 type App struct {
-	clientMu               sync.RWMutex
-	Client                 *client.Client
-	Store                  *db.Store
-	EventHandler           *client.EventHandler
-	Logger                 zerolog.Logger
-	DataDir                string
-	SessionPath            string
-	WhatsAppSessionPath    string
-	SignalConfigPath       string
+	clientMu            sync.RWMutex
+	Client              *client.Client
+	Store               *db.Store
+	EventHandler        *client.EventHandler
+	Logger              zerolog.Logger
+	DataDir             string
+	SessionPath         string
+	WhatsAppSessionPath string
+	SignalConfigPath    string
 	// sendTextOverride lets tests substitute the scheduler's send. Nil in prod.
 	sendTextOverride func(conversationID, body, replyToID string) (*db.Message, error)
 	// sendMediaOverride lets tests substitute the scheduler's media send. Nil in prod.
-	sendMediaOverride func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
-	Connected         atomic.Bool
+	sendMediaOverride      func(conversationID string, data []byte, filename, mime, caption, replyToID string) (*db.Message, error)
+	Connected              atomic.Bool
 	OnConversationsChange  func()
 	OnIncomingMessage      func(*db.Message)
 	OnMessagesChange       func(string)
@@ -475,6 +475,11 @@ func (a *App) LoadAndConnect() error {
 			a.emitStatusChange(false)
 			a.Logger.Warn().Msg("Google Messages connection lost; will attempt to reconnect")
 		},
+		// A 401 on the long-poll or ditto ping means the web cookies expired.
+		// Marking auth-expired (rather than a generic connection loss) is what
+		// makes the reconnect watchdog refresh cookies before reconnecting;
+		// without it the watchdog reconnects with the same dead cookie forever.
+		OnAuthExpired: a.HandleGoogleAuthExpiredError,
 		OnSessionInvalid: func() {
 			a.Connected.Store(false)
 			a.setClient(nil)

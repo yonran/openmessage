@@ -25,13 +25,21 @@ type OnSessionInvalid func()
 type OnConnectionLost func()
 
 type EventHandler struct {
-	Store                    *db.Store
-	Logger                   zerolog.Logger
-	SessionPath              string
-	Client                   *Client
-	OnConversationsChange    func()
-	OnSessionInvalid         OnSessionInvalid
-	OnConnectionLost         OnConnectionLost
+	Store                 *db.Store
+	Logger                zerolog.Logger
+	SessionPath           string
+	Client                *Client
+	OnConversationsChange func()
+	OnSessionInvalid      OnSessionInvalid
+	OnConnectionLost      OnConnectionLost
+	// OnAuthExpired is called when a listen/ping death carries an auth-expiry
+	// (401 / SESSION_COOKIE_INVALID) error. It returns true if it recognised and
+	// handled the error as auth-expiry (marking the session so the reconnect
+	// watchdog refreshes cookies); false otherwise, in which case the caller
+	// falls back to OnConnectionLost. Without this, an expired-cookie 401 on the
+	// long-poll is treated as an ordinary transient drop and the watchdog loops
+	// reconnect→401 with the same dead cookie until a manual restart.
+	OnAuthExpired            func(err error) bool
 	OnIncomingMessage        func(*db.Message)
 	OnPendingMedia           func(conversationID, messageID string)
 	OnMessagesChange         func(string)
@@ -54,13 +62,20 @@ func (h *EventHandler) Handle(rawEvt any) {
 	case *events.PairSuccessful:
 		h.Logger.Info().Str("phone_id", evt.PhoneID).Msg("Pairing successful")
 	case *events.ListenFatalError:
-		// Treat as transient: mark the connection lost (keep the session) and
-		// let the reconnect watchdog retry. libgm raises this on a single
-		// failed token refresh or a one-off 401, so deleting the session here
-		// would force a needless re-pair. A genuine logout arrives separately
-		// as GaiaLoggedOut (handled below) and DOES drop the session.
+		// libgm raises this on a failed token refresh or a one-off 401 on the
+		// long-poll. If the error is an expired-cookie 401, route it to
+		// OnAuthExpired so the reconnect watchdog refreshes cookies before
+		// reconnecting; otherwise it loops reconnect→401 with the same dead
+		// cookie and SMS silently freezes until a manual restart. Any other
+		// error is a genuine transient drop: keep the session (a real logout
+		// arrives separately as GaiaLoggedOut) and let the watchdog retry.
 		h.Logger.Error().Err(evt.Error).Msg("Listen fatal error — marking connection lost")
-		if h.OnConnectionLost != nil {
+		if h.OnAuthExpired != nil && h.OnAuthExpired(evt.Error) {
+			// Handled as auth-expiry; the watchdog will refresh cookies and
+			// reconnect. Skip OnConnectionLost so its generic "connection lost"
+			// status doesn't overwrite the auth-expired state the watchdog keys
+			// its cookie-refresh decision on.
+		} else if h.OnConnectionLost != nil {
 			h.OnConnectionLost()
 		}
 	case *events.GaiaLoggedOut:
@@ -77,8 +92,14 @@ func (h *EventHandler) Handle(rawEvt any) {
 		// Surface it and, once it persists, mark the connection lost so the
 		// watchdog reconnects instead of sitting in a silent zombie state.
 		h.Logger.Warn().Err(evt.Error).Int("count", evt.ErrorCount).Msg("Google Messages ping failed")
-		if evt.ErrorCount >= 3 && h.OnConnectionLost != nil {
-			h.OnConnectionLost()
+		if evt.ErrorCount >= 3 {
+			// Same 401-vs-transient split as ListenFatalError: an expired-cookie
+			// ping failure must trigger a cookie refresh, not a bare reconnect.
+			if h.OnAuthExpired != nil && h.OnAuthExpired(evt.Error) {
+				// handled as auth-expiry; watchdog refreshes cookies
+			} else if h.OnConnectionLost != nil {
+				h.OnConnectionLost()
+			}
 		}
 	case *events.NoDataReceived:
 		h.Logger.Debug().Msg("Google Messages long-poll received no data")
