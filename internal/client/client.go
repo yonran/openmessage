@@ -3,12 +3,22 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm/gmproto"
 )
+
+// passiveMode reports whether OpenMessage should connect Google Messages as a
+// permanently backgrounded web tab (libgm.Client.DontMarkActive): it keeps
+// receiving over the long-poll but never asserts foreground/active presence, so
+// Google keeps delivering notifications to the phone instead of suppressing
+// them for an "active web client". Opt-in via OPENMESSAGE_PASSIVE=1.
+func passiveMode() bool {
+	return strings.TrimSpace(os.Getenv("OPENMESSAGE_PASSIVE")) == "1"
+}
 
 type Client struct {
 	GM     *libgm.Client
@@ -30,6 +40,7 @@ func NewFromSession(sessionData *SessionData, logger zerolog.Logger) (*Client, e
 	}
 
 	cli := libgm.NewClient(authData, pushKeys, logger)
+	cli.DontMarkActive = passiveMode()
 	return &Client{GM: cli, Logger: logger}, nil
 }
 
