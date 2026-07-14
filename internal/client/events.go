@@ -59,6 +59,13 @@ func (h *EventHandler) Handle(rawEvt any) {
 		h.handleConversation(evt)
 	case *events.AuthTokenRefreshed:
 		h.handleAuthRefresh()
+	case *events.CookiesUpdated:
+		// Google rotates session cookies (SIDCC and friends) every few minutes
+		// and invalidates superseded values. When the daemon owns its cookie
+		// chain (dedicated Chrome profile that nothing else rotates), the
+		// rotated values only exist in memory — persist them or a restart
+		// resumes from a dead snapshot and the session 401s.
+		h.handleAuthRefresh()
 	case *events.PairSuccessful:
 		h.Logger.Info().Str("phone_id", evt.PhoneID).Msg("Pairing successful")
 	case *events.ListenFatalError:
