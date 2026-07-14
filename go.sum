@@ -71,8 +71,8 @@ github.com/vektah/gqlparser/v2 v2.5.27 h1:RHPD3JOplpk5mP5JGX8RKZkt2/Vwj/PZv0HxTd
 github.com/vektah/gqlparser/v2 v2.5.27/go.mod h1:D1/VCZtV3LPnQrcPBeR/q5jkSQIPti0uYCP/RI0gIeo=
 github.com/wk8/go-ordered-map/v2 v2.1.8 h1:5h/BUHu93oj4gIdvHHHGsScSTMijfx5PeYkE/fJgbpc=
 github.com/wk8/go-ordered-map/v2 v2.1.8/go.mod h1:5nJHM5DyteebpVlHnWMV0rPz6Zp7+xBAnxjb1X5vnTw=
-github.com/yonran/gmessages v0.2602.1-0.20260714230240-c27b0e15ee37 h1:LBuLrCw5ajej7wcbu5hgdZafqgVyL+ueKBskXwGOp0s=
-github.com/yonran/gmessages v0.2602.1-0.20260714230240-c27b0e15ee37/go.mod h1:osNvCtzL00mEpFQo0e1rks2B1vjOGKUqckhBu+Pc1+0=
+github.com/yonran/gmessages v0.2602.1-0.20260714232221-7957cd862e0e h1:XNMUFkyosynf7wTKORhj+PoYM3bh9tbUWwDBl0K6vkQ=
+github.com/yonran/gmessages v0.2602.1-0.20260714232221-7957cd862e0e/go.mod h1:osNvCtzL00mEpFQo0e1rks2B1vjOGKUqckhBu+Pc1+0=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=
 github.com/yosida95/uritemplate/v3 v3.0.2/go.mod h1:ILOh0sOhIJR3+L/8afwt/kE++YT040gmv5BQTMR2HP4=
 go.mau.fi/libsignal v0.2.2 h1:QV+XdzQkm3x3aSG7FcqfGSZuFXz83pRZPBFaPygHbOU=
