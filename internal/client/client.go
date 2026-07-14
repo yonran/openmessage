@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/mautrix-gmessages/pkg/libgm"
@@ -29,6 +31,18 @@ func inactiveMode() bool {
 	return strings.TrimSpace(os.Getenv("OPENMESSAGE_INACTIVE")) == "1"
 }
 
+// receiveIdleTimeout overrides libgm's ReceiveMessages idle deadline (the dead-
+// stream detector). OPENMESSAGE_RECEIVE_IDLE_SECS in seconds; 0/unset = libgm
+// default (30s). Set low only to force-exercise the reconnect path in tests.
+func receiveIdleTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECEIVE_IDLE_SECS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 0
+}
+
 type Client struct {
 	GM     *libgm.Client
 	Logger zerolog.Logger
@@ -51,6 +65,9 @@ func NewFromSession(sessionData *SessionData, logger zerolog.Logger) (*Client, e
 	cli := libgm.NewClient(authData, pushKeys, logger)
 	cli.DontMarkActive = passiveMode()
 	cli.ReportInactive = inactiveMode()
+	if d := receiveIdleTimeout(); d > 0 {
+		cli.ReceiveIdleTimeout = d
+	}
 	return &Client{GM: cli, Logger: logger}, nil
 }
 
