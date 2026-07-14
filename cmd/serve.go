@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -270,6 +271,32 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				}
 			}
 		}()
+	}
+
+	// Google Messages periodic receive safety-net. The modern long-poll can go
+	// silently deaf (delivers nothing) while still reporting connected: in
+	// inactive-presence mode the ditto ping is never acked, so libgm cannot tell
+	// a dead long-poll from a live-but-idle one, and its fallback data-receive
+	// check only runs every ~3h. Without this, inbound SMS/RCS silently stops
+	// until the next reconnect/restart. Pull the most-recent conversations via
+	// the request/response API on a short timer so messages land within the
+	// interval regardless of long-poll health. Interval tunable via
+	// OPENMESSAGE_RECONCILE_SECS (default 120; <=0 disables).
+	if !isDemo {
+		if secs := googleReconcileIntervalSeconds(); secs > 0 {
+			go func() {
+				ticker := time.NewTicker(time.Duration(secs) * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					if app.Sandboxed() {
+						continue
+					}
+					if a.GoogleStatus().Connected {
+						a.StartRecentReconcileLimited("periodic", googleReconcileConvLimit())
+					}
+				}
+			}()
+		}
 	}
 
 	// Sync WhatsApp and iMessage periodically (every 30s, incremental)
@@ -609,6 +636,29 @@ func configureServeEnv(opts serveOptions) func() {
 		}
 		_ = os.Unsetenv("OPENMESSAGES_DEMO")
 	}
+}
+
+// googleReconcileIntervalSeconds is how often to run the periodic Google receive
+// safety-net reconcile. Default 120s; OPENMESSAGE_RECONCILE_SECS overrides;
+// <=0 disables.
+func googleReconcileIntervalSeconds() int {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECONCILE_SECS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 120
+}
+
+// googleReconcileConvLimit is how many recent conversations the periodic reconcile
+// pulls each tick. Kept small (INBOX is recency-ordered) to bound API load.
+func googleReconcileConvLimit() int {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECONCILE_CONVS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 12
 }
 
 // LogLevel returns the zerolog level based on OPENMESSAGES_LOG_LEVEL env var.

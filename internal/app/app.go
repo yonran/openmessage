@@ -610,10 +610,21 @@ func (a *App) StartDeepBackfill() bool {
 }
 
 func (a *App) StartRecentReconcile(reason string) bool {
+	return a.StartRecentReconcileLimited(reason, recentReconcileConversationLimit)
+}
+
+// StartRecentReconcileLimited pulls the most-recent convLimit conversations via
+// the request/response API (independent of the long-poll) and stores any new
+// messages. Used both on listen-recovery (full limit) and by the periodic
+// safety-net poll (small limit): the modern Google Messages long-poll can go
+// silently deaf while still reporting connected — the inactive-presence ditto
+// ping never gets acked, so it can't detect a dead long-poll — and this pull
+// guarantees inbound messages still land within the poll interval.
+func (a *App) StartRecentReconcileLimited(reason string, convLimit int) bool {
 	if a.backfillRunning.Load() || !a.reconcileRunning.CompareAndSwap(false, true) {
 		return false
 	}
-	go a.reconcileRecentConversations(reason)
+	go a.reconcileRecentConversations(reason, convLimit)
 	return true
 }
 
