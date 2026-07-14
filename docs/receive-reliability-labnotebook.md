@@ -1,0 +1,123 @@
+# OpenMessage receive-reliability lab notebook
+
+Goal: determine why openmessage silently stops receiving Google Messages SMS/RCS
+while reporting `connected:true`. Change ONE knob at a time, send a real test
+message, record whether/when it arrives.
+
+## Fixed facts (established before the experiment)
+- Symptom: daemon `connected:true`, no reconnect, but no new SMS/RCS for ~1h40m
+  (10:03→11:43 AM Jul 14). WhatsApp (separate conn) kept flowing. Restart's
+  backfill recovered the missed messages.
+- Receive path = `ReceiveMessages` long-poll (`libgm.pollReceive`/`readLongPoll`).
+- Two stall detectors in libgm:
+  1. ditto-ping response-wait → timeout → reconnect. **Disabled in inactive mode
+     by our fire-and-forget change (`longpoll.go:223-238`).**
+  2. `shouldDoDataReceiveCheck` → extra `GET_UPDATES`. Interval =
+     `DefaultBugleDefaultCheckInterval = 2h55m` (`longpoll.go:246`). Very slow.
+- Knobs available WITHOUT rebuild (launchd env):
+  - `OPENMESSAGE_INACTIVE` (0/1) → ditto `isActive` true/false
+  - `OPENMESSAGE_PASSIVE` (0/1) → `DontMarkActive` (skip presence ping entirely)
+- Knobs needing rebuild: fire-and-forget logic, data-receive-check interval,
+  openmessage-side periodic reconcile.
+
+## Hypotheses
+- H1: `isActive=false` makes Google stop delivering to the long-poll (design).
+  Counter-evidence: real web client receives while backgrounded.
+- H2: fire-and-forget disabled fast stall detection; long-poll stalls and isn't
+  recovered for ~3h (bug we introduced).
+- H3: something else (cookie/session, competing web session, etc.).
+
+## Test protocol
+1. Note config + connection age (time since last "Connected to Google Messages").
+2. Send a text from voice.google.com to the paired cell number.
+3. Wait ~90s. Query messages.db for the new inbound message.
+4. Record: received? latency? daemon log events during window.
+
+## Runs
+(see table below; newest last)
+
+| # | time | config | conn age | test msg | received? | latency | notes |
+|---|------|--------|----------|----------|-----------|---------|-------|
+| A | 13:35 | INACTIVE=1 PASSIVE=0 (deployed, no rebuild) | ~1h44m (conn since 11:51) | LABTEST-A-1334 (GV→cell) | NO (>6min) | — | see notes A |
+
+### STALL CONFIRMED (Run A)
+- 13:42→13:54 watch: newest SMS frozen at 13:30:51 the whole time; LABTEST-A-1334
+  (sent 13:35) never arrived. 24 min of total receive silence, `connected:true`,
+  no reconnect. Stall onset ~13:30, ~1h39m after the 11:51 (re)connect.
+- Live log around today's earlier reconnects: ping SEND failures (DNS i/o timeout,
+  401) ARE detected → reconnect. A long-poll that goes silent while pings still
+  SUCCEED is NOT detected → the silent stall. Root mechanism: our fire-and-forget
+  removed the ping-response-wait, which in active mode confirms the long-poll is
+  alive (ping ack returns via the long-poll). Fallback GET_UPDATES check = every
+  ~3h. So a silently-dead long-poll goes unnoticed for hours.
+- KEY UNKNOWN → deployed HEALTHPROBE build (gmessages 1c8639f, openmessage 7afdc5d):
+  logs whether each isActive=false ping is ACKED via long-poll or TIMES OUT. If it
+  TIMES OUT exactly when receive stalls → response-wait is a valid dead-long-poll
+  detector → fix = reconnect on timeout. If ACKED during a stall → need a different
+  detector (openmessage-side periodic reconcile).
+
+| B | 14:05 | INACTIVE=1 + HEALTHPROBE build | fresh (conn 14:04) | LABTEST-B-1405 | YES @14:06:01 (~1min) | — | fresh conn receives fine |
+
+### KEY FINDING (Run B) — the crux
+- HEALTHPROBE: isActive=false ditto pings **TIMED OUT** at 2:05 and 2:06, *while*
+  test B was being delivered through the long-poll at 14:06:01. So an inactive
+  ping's ack NEVER comes, whether the long-poll is alive or dead.
+- => the ping response-wait CANNOT detect a dead long-poll in inactive mode
+  (always times out). "Reconnect on ping timeout" is a dead end (false positives).
+- => FIX must be independent of long-poll liveness: an openmessage-side periodic
+  reconcile via the request/response API (ListConversations/FetchMessages), which
+  stays valid during a stall (pings still SEND ok => session valid). Implemented as
+  OPENMESSAGE_RECONCILE_SECS (default 120s) periodic reconcile.
+
+| C | 14:14 | INACTIVE=1 + reconcile-fix (RECONCILE_SECS=120) | fresh (conn 14:12) | LABTEST-C-1414 | YES | fast | received on fresh conn (long-poll healthy) |
+
+### Run C notes — fix mechanism CONFIRMED firing
+- Periodic reconcile fires reliably every 2 min: log shows "Reconciling recent
+  conversations conversation_limit=12 ... reason=periodic" at 2:18,2:20,2:22,2:24,
+  2:26,2:28PM. So the safety-net pull runs as designed, independent of long-poll.
+- HEALTHPROBE keeps timing out every ping (expected; inactive pings never acked).
+- No reconnects during the window; receive fresh.
+- REMAINING PROOF: catch a natural long-poll stall (>~1.5h uptime) and confirm a
+  test RCS still arrives within ~2min via the reconcile while the long-poll is
+  dead. Prior strong evidence it will: the 11:43 restart's ListConversations
+  backfill recovered the 10:03→11:43 messages, i.e. the same API works while the
+  session is valid (pings send fine during a stall). Continuing the soak to the
+  stall window (~15:42) to get the empirical confirmation.
+- Note: background soak watchers keep getting culled (~13min); switching to
+  wakeup-paced point checks.
+
+| D | 15:11 | INACTIVE=1 + reconcile-fix | ~58m (conn 14:12) | LABTEST-D-1510 | YES @~15:11:20 (~10s) | fast | long-poll healthy at 58m — no natural stall. |
+| E | 15:54 | INACTIVE=1 + reconcile-fix | ~1h40m (conn 14:12) | LABTEST-E-1553 | YES @15:54:02 (~10s) | fast | long-poll STILL healthy at 1h40m (prior stall mark) — stalls are intermittent, not deterministic by uptime. Switched to a FORCED test. |
+| F | 15:58 | INACTIVE=1 + reconcile-fix + **OPENMESSAGE_DROP_LONGPOLL=1** | fresh (conn 15:57) | LABTEST-F-1558 | **YES @16:00:00 (~80s)** | 80s | **DECISIVE. Long-poll deliveries forcibly dropped (2× "DROP_LONGPOLL: ignoring real-time message event" logged) → simulated a silently-dead long-poll. F still arrived via the 3:59PM periodic reconcile (~80s). Fast (~10s) for healthy long-poll vs 80s on a reconcile tick when dropped = exactly the expected signatures.** |
+
+## CONCLUSION — fix confirmed
+Root cause: the modern Google Messages long-poll silently goes deaf (delivers
+nothing) while still `connected`. In inactive-presence mode (isActive=false, kept
+for phone notifications) the ditto ping is never acked, so libgm cannot detect a
+dead long-poll; its fallback check is ~3-hourly. Result: inbound SMS/RCS silently
+stops for hours.
+
+Fix: openmessage-side periodic reconcile via the request/response API
+(ListConversations/FetchMessages) every OPENMESSAGE_RECONCILE_SECS=120s. Proven
+(run F) to deliver messages within ~80s even with the long-poll's real-time
+delivery fully disabled. Keeps isActive=false → phone notifications AND reliable
+receive. Under normal operation the healthy long-poll still delivers in ~10s; the
+reconcile is the safety net that bounds worst-case receive latency to the interval.
+
+Cleanup pending: remove the noisy HEALTHPROBE WRN logging (gmessages); keep the
+DROP_LONGPOLL debug flag (default off) and the periodic reconcile.
+
+### Run A notes
+- Test method VALIDATED: prior GV self-texts (+14152301367 → cell) are in the DB
+  (e.g. "testing message to myself" 07-11 01:53), so GV→cell→openmessage normally
+  syncs. 17 msgs historically from that GV number.
+- Daemon was NOT stalled by age: it received real inbound at 12:36, 12:54
+  (+19257856488 "Correct" — the previously-broken thread), and **13:30:51** — i.e.
+  fine at ~1h40m uptime. So "aged connection stalls" (H2 by age) is NOT supported.
+- BUT: newest received = 13:30:51; I sent LABTEST-A-1334 at 13:35 → not received by
+  13:41. Nothing received in the 13:30→13:41 window. Two live possibilities:
+  (a) a stall began ~13:30 (my test hit it), or (b) GV self-msg latency. Watching.
+- REVISED PICTURE: the real 10:03→11:43 stall happened after the session had been
+  connected since ~01:55 (≈8h uptime), ended only by my manual restart. Points at a
+  LONG-timescale trigger (token/session/cookie aging or a discrete event), NOT a
+  ~1.5h age. Need longer observation.
