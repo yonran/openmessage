@@ -161,6 +161,23 @@ Note: a natural/forced 30s-silence stall triggers the SAME reconnect path alread
 proven in the aggressive test, so recovery is validated; the 30s soak only needs
 to confirm no false-positive fires under healthy heartbeats.
 
+## PHASE 2 CONCLUSION — proper fix shipped, reconcile removed
+- No-thrash soak (idle=30s, 15 min): idle_fires delta = **0**; heartbeats steady
+  at ~10s. No false positives.
+- Finalized: removed the periodic reconcile, STREAMPULSE, DROP_LONGPOLL, HEALTHPROBE.
+  Sole receive-reliability fix = the libgm idle read-deadline (gmessages b632fa6,
+  openmessage 131608, home.nix e5daa0f). Env now: INACTIVE=1 + dedicated cookie
+  profile only; RECEIVE_IDLE_SECS unset (30s default).
+- Final clean build: 0 STREAMPULSE, 0 periodic reconcile, 0 idle-fires; probe I
+  (LABTEST-I-1704) arrived ~10s via the healthy long-poll.
+
+### Root cause (final, one line)
+libgm's foreground ReceiveMessages read loop had no read deadline, so a
+silently-dead stream (no data/heartbeat/error) blocked reader.Read forever and
+inbound messages stopped. Fix = idle read-deadline (30s = 3 missed ~10s
+heartbeats) → close+reconnect, matching the real web client's liveness detection.
+Not a Google bug; not a poll hack.
+
 ### Run A notes
 - Test method VALIDATED: prior GV self-texts (+14152301367 → cell) are in the DB
   (e.g. "testing message to myself" 07-11 01:53), so GV→cell→openmessage normally
