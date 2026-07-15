@@ -3,7 +3,6 @@ package client
 import (
 	"encoding/hex"
 	"encoding/json"
-	"os"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -50,31 +49,13 @@ type EventHandler struct {
 	OnPhoneRespondingChange  func(bool)
 }
 
-// dropLongPollDeliveries reports whether real-time long-poll message/conversation
-// events should be ignored (OPENMESSAGE_DROP_LONGPOLL=1). Diagnostic only: forces
-// the periodic reconcile to be the sole receive path so it can be verified.
-func dropLongPollDeliveries() bool {
-	return strings.TrimSpace(os.Getenv("OPENMESSAGE_DROP_LONGPOLL")) == "1"
-}
-
 func (h *EventHandler) Handle(rawEvt any) {
 	switch evt := rawEvt.(type) {
 	case *events.ClientReady:
 		h.handleClientReady(evt)
 	case *libgm.WrappedMessage:
-		if dropLongPollDeliveries() {
-			// DEBUG: simulate a silently-dead long-poll by ignoring real-time
-			// message events. The periodic reconcile (request/response API) must
-			// then be the sole delivery path — used to prove the reconcile
-			// recovers receipt across a stalled long-poll. OPENMESSAGE_DROP_LONGPOLL=1.
-			h.Logger.Warn().Msg("DROP_LONGPOLL: ignoring real-time message event (reconcile must deliver)")
-			return
-		}
 		h.handleMessage(evt)
 	case *gmproto.Conversation:
-		if dropLongPollDeliveries() {
-			return
-		}
 		h.handleConversation(evt)
 	case *events.AuthTokenRefreshed:
 		h.handleAuthRefresh()

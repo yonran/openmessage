@@ -107,6 +107,60 @@ reconcile is the safety net that bounds worst-case receive latency to the interv
 Cleanup pending: remove the noisy HEALTHPROBE WRN logging (gmessages); keep the
 DROP_LONGPOLL debug flag (default off) and the periodic reconcile.
 
+## PHASE 2 — do it properly, drop the reconcile hack (user directive)
+The reconcile is a request/response poll bolted on top of a streaming API — a
+workaround, not what the real client does. Capture (CAPTURED_FINDINGS §2.8–2.9):
+the real messages.google.com/web client does NOT poll; it holds a streaming
+`ReceiveMessages` long-poll whose response interleaves data frames and server
+**heartbeat** frames, and a parallel `PullMessages` heartbeat long-poll. It stays
+healthy because it DETECTS a dead stream (via the heartbeat pulse / acked
+keepalives) and reconnects.
+
+libgm's gap (longpoll.go readLongPoll): in foreground mode there is **NO read
+deadline** — `reader.Read` blocks forever, so a silently-dead stream (no data, no
+heartbeat) is never noticed. That's the true root cause; the isActive=false mode
+just also disables the ditto-ping detector. Proper fix = idle read-deadline:
+if no frame (data OR heartbeat) arrives within the heartbeat interval + margin,
+close and reconnect — exactly what the real client effectively does.
+
+Pivotal unknown: does the server heartbeat an isActive=false stream regularly
+(=> clean deadline) or go quiet when "inactive" (=> deadline would thrash)?
+Deployed STREAMPULSE instrumentation (gmessages 7957cd8, openmessage d4b9d38) to
+log every ReceiveMessages frame's inter-arrival gap.
+
+### HEARTBEAT CADENCE MEASURED → deadline is viable
+Steady-state heartbeat gap = **10.00s, very tight** (9993–10085ms), on the
+isActive=false stream. So the server heartbeats us regularly regardless of
+"inactive" presence → a read-deadline of 30s (3 missed heartbeats) cleanly
+detects a dead stream with no false-positive risk.
+
+### FIX IMPLEMENTED (gmessages dd570f8, openmessage 091cffab)
+longpoll.go readLongPoll: foreground idle read-deadline. Any frame (data or
+heartbeat) rearms a timer; if it fires (no frame within ReceiveIdleTimeout,
+default 30s), close THIS poll's connection (rc.Close(), NOT closeLongPolling
+which bumps listenID and would end the loop) so pollReceive reopens it →
+reconnect. Timeout tunable via OPENMESSAGE_RECEIVE_IDLE_SECS.
+
+### VALIDATION (in progress) — reconcile OFF (RECONCILE_SECS=0)
+- Aggressive test: RECEIVE_IDLE_SECS=5 (< 10s heartbeat) forces the idle-fire +
+  reconnect path every ~5s. Confirm: idle-fires logged, and probes still arrive
+  despite constant reconnects (proves the reconnect path delivers, no message
+  loss across reconnects).
+- Then RECEIVE_IDLE_SECS=30 (default): confirm ZERO idle-fires under healthy
+  operation (no thrash) and probes arrive fast via the healthy long-poll.
+- Then REMOVE the periodic reconcile + all diagnostics (STREAMPULSE), keep the
+  idle-deadline as the sole fix.
+
+### VALIDATION RESULTS
+| test | config | result |
+|---|---|---|
+| aggressive | RECONCILE=0, IDLE=5s | **PASS.** 12 idle-fires in 60s (~1/5s), each reconnects. Probe H (LABTEST-H-1638) sent ~16:38 **arrived 16:39:50 despite constant ~5s reconnect churn** with reconcile OFF. => reconnect path delivers, no loss across reconnects. Google re-delivers queued msgs on reconnect. |
+| no-thrash | RECONCILE=0, IDLE=30s (default) | in progress — expect ZERO idle-fires (heartbeat 10s < 30s) + fast probe delivery. |
+
+Note: a natural/forced 30s-silence stall triggers the SAME reconnect path already
+proven in the aggressive test, so recovery is validated; the 30s soak only needs
+to confirm no false-positive fires under healthy heartbeats.
+
 ### Run A notes
 - Test method VALIDATED: prior GV self-texts (+14152301367 → cell) are in the DB
   (e.g. "testing message to myself" 07-11 01:53), so GV→cell→openmessage normally

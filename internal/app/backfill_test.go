@@ -1020,7 +1020,7 @@ func TestRecentReconcileStoresRecentMessagesAndPublishesChanges(t *testing.T) {
 		messagesChangedFor = conversationID
 	}
 
-	a.reconcileRecentConversations("listen_recovered", 50)
+	a.reconcileRecentConversations("listen_recovered")
 
 	convos, err := a.Store.ListConversations(10)
 	if err != nil {
@@ -1078,7 +1078,7 @@ func TestRecentReconcilePagesUntilItCrossesLocalBoundary(t *testing.T) {
 		t.Fatalf("seed boundary message: %v", err)
 	}
 
-	a.reconcileRecentConversations("listen_recovered", 50)
+	a.reconcileRecentConversations("listen_recovered")
 
 	if mock.fetchCalls["c1"] != 2 {
 		t.Fatalf("fetch call count = %d, want 2 pages to cross the local boundary", mock.fetchCalls["c1"])

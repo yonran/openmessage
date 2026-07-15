@@ -435,12 +435,8 @@ func (a *App) BackfillConversationByPhone(phone string) error {
 	return nil
 }
 
-func (a *App) reconcileRecentConversations(reason string, convLimit int) {
+func (a *App) reconcileRecentConversations(reason string) {
 	defer a.reconcileRunning.Store(false)
-
-	if convLimit <= 0 {
-		convLimit = recentReconcileConversationLimit
-	}
 
 	gm, clientToken := a.currentBackfillClient()
 	if gm == nil {
@@ -450,11 +446,11 @@ func (a *App) reconcileRecentConversations(reason string, convLimit int) {
 
 	a.Logger.Info().
 		Str("reason", reason).
-		Int("conversation_limit", convLimit).
+		Int("conversation_limit", recentReconcileConversationLimit).
 		Int("message_limit", recentReconcileMessageLimit).
 		Msg("Reconciling recent conversations")
 
-	resp, err := gm.ListConversationsWithCursor(convLimit, gmproto.ListConversationsRequest_INBOX, nil)
+	resp, err := gm.ListConversationsWithCursor(recentReconcileConversationLimit, gmproto.ListConversationsRequest_INBOX, nil)
 	if err != nil {
 		if a.HandleGoogleAuthExpiredError(err) {
 			a.Logger.Warn().Err(err).Str("reason", reason).Msg("Recent reconcile aborted because Google auth expired")
