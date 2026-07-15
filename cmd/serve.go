@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -270,6 +271,34 @@ func RunServe(logger zerolog.Logger, args ...string) error {
 				}
 			}
 		}()
+	}
+
+	// Google Messages periodic receive pull — REQUIRED, not a safety-net.
+	// We run isActive=false (OPENMESSAGE_INACTIVE=1) so Google keeps notifying the
+	// PHONE. By design, Google does NOT stream inbound messages to an inactive web
+	// client — it routes them to the phone — so the ReceiveMessages long-poll stays
+	// alive (heartbeats, reopens) but delivers nothing for hours (confirmed: Rose's
+	// reply and 2.5h of messages withheld from a healthy stream, recovered instantly
+	// by one ListConversations pull). libgm's idle-deadline only catches a *dead*
+	// stream; it cannot catch this because the stream is alive. The only way an
+	// inactive client gets its messages is to pull them via the request/response
+	// API on a timer. Interval OPENMESSAGE_RECONCILE_SECS (default 120; <=0 disables),
+	// breadth OPENMESSAGE_RECONCILE_CONVS (default 12; INBOX is recency-ordered).
+	if !isDemo {
+		if secs := googleReconcileIntervalSeconds(); secs > 0 {
+			go func() {
+				ticker := time.NewTicker(time.Duration(secs) * time.Second)
+				defer ticker.Stop()
+				for range ticker.C {
+					if app.Sandboxed() {
+						continue
+					}
+					if a.GoogleStatus().Connected {
+						a.StartRecentReconcileLimited("periodic", googleReconcileConvLimit())
+					}
+				}
+			}()
+		}
 	}
 
 	// Sync WhatsApp and iMessage periodically (every 30s, incremental)
@@ -609,6 +638,29 @@ func configureServeEnv(opts serveOptions) func() {
 		}
 		_ = os.Unsetenv("OPENMESSAGES_DEMO")
 	}
+}
+
+// googleReconcileIntervalSeconds is how often to pull recent Google conversations
+// (the inactive-client receive path). Default 120s; OPENMESSAGE_RECONCILE_SECS
+// overrides; <=0 disables.
+func googleReconcileIntervalSeconds() int {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECONCILE_SECS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 120
+}
+
+// googleReconcileConvLimit is how many recent conversations each pull fetches.
+// Kept small (INBOX is recency-ordered) to bound API load.
+func googleReconcileConvLimit() int {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECONCILE_CONVS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 12
 }
 
 // LogLevel returns the zerolog level based on OPENMESSAGES_LOG_LEVEL env var.
