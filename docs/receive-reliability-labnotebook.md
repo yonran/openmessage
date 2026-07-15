@@ -192,3 +192,28 @@ Not a Google bug; not a poll hack.
   connected since ~01:55 (≈8h uptime), ended only by my manual restart. Points at a
   LONG-timescale trigger (token/session/cookie aging or a discrete event), NOT a
   ~1.5h age. Need longer observation.
+
+## PHASE 3 — CORRECTION: the reconcile is REQUIRED (removing it was wrong)
+Empirical proof (2026-07-14 ~23:44): with idle-deadline only (reconcile removed),
+openmessage received NOTHING for 2.5h while the long-poll was fully healthy —
+reopening every ~15min (HTTP 200), heartbeats flowing, ditto pings succeeding,
+0 idle-fires, 0 reconnects. "Rose's reply" (707-561-2671, 22:27) and ~2.5h of
+other messages were WITHHELD from the live stream and recovered instantly by one
+ListConversations pull (restart's listen_recovered reconcile).
+
+Conclusion: there are TWO stall modes, needing TWO mechanisms:
+1. DEAD stream (no data/heartbeat) → libgm idle read-deadline reconnects it.
+2. LIVE-but-WITHHOLDING stream → Google does not stream inbound to an
+   isActive=false (inactive) client; it routes to the phone. The ONLY fix is a
+   periodic request/response pull (reconcile). Not a hack — it is the receive
+   path for an inactive client. The real web client never needs it because it is
+   either active (streamed) or closed (not receiving); openmessage uniquely wants
+   inactive+receiving (phone notifications + archive), which Google's streaming
+   does not serve.
+
+Restored: reconcile (openmessage 2294b4d, home.nix d18bd69, RECONCILE_SECS=120)
+alongside the idle-deadline (gmessages b632fa6). Both now deployed.
+
+Still open: the "Device pairing" phone notification appears intrinsic to the
+isActive=false presence signal (the same signal that makes the phone notify) —
+a Google-design tradeoff, not yet resolved.
