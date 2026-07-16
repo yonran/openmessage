@@ -280,3 +280,23 @@ tab and make openmessage behave identically.
 Config end state: INACTIVE=0, RECONCILE_SECS=0, PASSIVE=0, dedicated Chrome
 profile, idle read-deadline 30s. If run Q fails or phone notifications regress,
 revert env to INACTIVE=1 + RECONCILE_SECS=120 (both paths still in the code).
+
+## PHASE 5 — 2026-07-15/16 night: isActive is the ring-suppressor; drop the pings
+- User report (~23:38): with INACTIVE=0 (isActive=true pings every minute) the
+  phone stopped vibrating for inbound. So the minute-cadence isActive=true ping
+  continuously re-suppresses phone rings — run L was not a contradiction: the
+  TAB doesn't ping while backgrounded.
+- Run R RETRACTED: the probe was never actually sent (browser click missed the
+  reply box after the tab idled; the Voice thread shows no LABTEST-R). The
+  "INACTIVE=1 + reassert" configuration therefore remains UNTESTED; the only
+  clean evidence for inactive-mode fan-out revocation is still run K.
+- New mode (gmessages 29eb9e2 SkipDittoPings; openmessage a45e44b
+  OPENMESSAGE_NO_PINGS=1): backgrounded-tab replica — SetActiveSession once on
+  connect, NO periodic NOTIFY_DITTO_ACTIVITY at all, silent GET_UPDATES
+  reassert on every reopen; liveness = 30s idle read-deadline.
+- Run S — PASS on BOTH axes: LABTEST-S-2352 sent 23:51:03 → in daemon DB by
+  23:51:31 via stream (no reconcile), AND the phone vibrated (user-confirmed),
+  ~90s after the connect-time SetActiveSession. Stream delivery + ringing
+  phone simultaneously, for the first time.
+- Run T (pending): probe after the first natural ~15-min reopen in no-pings
+  mode (reassert path already validated by run Q under isActive=true).
