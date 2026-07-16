@@ -217,3 +217,62 @@ alongside the idle-deadline (gmessages b632fa6). Both now deployed.
 Still open: the "Device pairing" phone notification appears intrinsic to the
 isActive=false presence signal (the same signal that makes the phone notify) —
 a Google-design tradeoff, not yet resolved.
+
+## PHASE 4 — 2026-07-15: replicate the web client exactly (isActive=true, no reconcile)
+User directive: stop approximating; observe a real backgrounded messages.google.com
+tab and make openmessage behave identically.
+
+### Run J — backgrounded real web tab (default Chrome profile, separate GAIA pairing)
+- Opened messages.google.com (already GAIA-paired, no QR), captured startup RPCs:
+  SignInGaia ×2, ReceiveMessages (both main + -jms-us hosts), PullMessages,
+  ListIdentities, SendMessage-wrapped ditto, AckMessages. ZERO ListConversations.
+  (Also kills the "old API" hypothesis from notification-suppression-investigation.md:
+  the real web client uses ReceiveMessages too.)
+- Backgrounded the tab (focused a Voice tab), cleared its network log, sent
+  LABTEST-J-1300 via voice.google.com → the backgrounded tab received it LIVE:
+  only new traffic = 1 AckMessages + 1 ditto SendMessage. **A backgrounded tab
+  keeps streaming; backgrounding ≠ inactive.**
+- Daemon (INACTIVE=1, RECONCILE=120) also got J, but timing was ambiguous vs the
+  reconcile tick (ticks at :52 of odd minutes; J landed at 16:03:15, tick 16:03:52).
+
+### Run K — tick-timing disambiguation (daemon still INACTIVE=1)
+- Sent LABTEST-K-1608 at 16:08:37, just AFTER the 16:07:52 tick.
+- 16:09:03 (26s): NOT in DB. Appeared exactly at the 16:09:52 tick.
+- **The inactive daemon's stream did not deliver; the reconcile did.** (Probe B
+  precedent shows live stream delivery is ~seconds when it happens at all.)
+
+### Run L — does an ACTIVE client suppress phone notifications? (the false premise)
+- LABTEST-L-1615 sent with the active web tab open: **phone notified normally.**
+- So active-client-suppresses-phone is FALSE for a real web session. The earlier
+  "INACTIVE=1 CONFIRMED restores phone notifications" finding predates the
+  dedicated-profile fix, when reconnect churn re-ran SetActiveSession every ~18min.
+
+### Run M — daemon flipped to INACTIVE=0, RECONCILE_SECS=0 (home.nix, env only)
+- LABTEST-M-1624 sent 16:24:41 → in DB by 16:24:57, reconcile disabled.
+  **Active daemon streams like the tab.**
+
+### Runs N/O — the NEW withholding mode: reopen without re-assertion
+- 16:42 WRN "Stopped reading data from server: connection reset by peer".
+  Poll reopened silently (2 ESTABLISHED conns to the receive host, status
+  connected, heartbeats fine).
+- LABTEST-N-1644 and LABTEST-O-1647: NEVER delivered on the reopened stream
+  (>4 min), recovered only by the next restart's backfill.
+- **Google stops fanning out to a session whose stream reconnected without a
+  fresh activity assertion.** This also reframes Phase 3: the 2.5h withholding
+  followed reopens with no re-assertion (inactive client never re-asserts).
+  The web client re-asserts on every tab hidden→visible transition, so its
+  reopens are always re-blessed shortly after.
+
+### Fix (gmessages a1df7d9, openmessage e9c4fae): reassertActiveSession
+- After every long-poll reopen except the first (postConnect covers that), send
+  GET_UPDATES on the EXISTING session (same call as HandleNoRecentUpdates).
+  Unlike SetActiveSession there is no ResetSessionID, so no "Device pairing"
+  phone notification.
+- Run P — fresh connect after deploy: LABTEST-P-1700 sent 17:00:01, in DB by
+  17:00:32 via stream (reconcile still 0).
+- Run Q (pending): probe after the first natural ~15-min reopen to validate the
+  re-assert keeps the stream delivering.
+
+Config end state: INACTIVE=0, RECONCILE_SECS=0, PASSIVE=0, dedicated Chrome
+profile, idle read-deadline 30s. If run Q fails or phone notifications regress,
+revert env to INACTIVE=1 + RECONCILE_SECS=120 (both paths still in the code).
