@@ -270,8 +270,12 @@ tab and make openmessage behave identically.
   phone notification.
 - Run P — fresh connect after deploy: LABTEST-P-1700 sent 17:00:01, in DB by
   17:00:32 via stream (reconcile still 0).
-- Run Q (pending): probe after the first natural ~15-min reopen to validate the
-  re-assert keeps the stream delivering.
+- Run Q — PASS: stream reopened 17:11 ("Long polling opened" + "Re-asserted
+  active session after long-poll reopen" in debug log); LABTEST-Q-1713 sent
+  17:12:35 → in DB by 17:13:01 via the reopened stream. The exact reopen mode
+  that swallowed runs N/O now delivers. Bonus: with isActive=true the ditto
+  pings are acked again (~300ms every minute), restoring libgm's ping-based
+  liveness detection that inactive mode had lost.
 
 Config end state: INACTIVE=0, RECONCILE_SECS=0, PASSIVE=0, dedicated Chrome
 profile, idle read-deadline 30s. If run Q fails or phone notifications regress,
