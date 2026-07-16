@@ -31,6 +31,17 @@ func inactiveMode() bool {
 	return strings.TrimSpace(os.Getenv("OPENMESSAGE_INACTIVE")) == "1"
 }
 
+// noPingsMode suppresses the periodic ditto-activity ping entirely while
+// keeping SetActiveSession-on-connect and libgm's reassert-on-reopen — the
+// backgrounded-web-tab replica (libgm.Client.SkipDittoPings). Measured live
+// (labnotebook runs J-R): pinging isActive=true re-suppresses the phone's
+// rings every minute; pinging isActive=false revokes stream fan-out. A real
+// backgrounded tab sends neither. Opt-in via OPENMESSAGE_NO_PINGS=1;
+// overrides OPENMESSAGE_INACTIVE (no ping is sent to carry it).
+func noPingsMode() bool {
+	return strings.TrimSpace(os.Getenv("OPENMESSAGE_NO_PINGS")) == "1"
+}
+
 // receiveIdleTimeout overrides libgm's ReceiveMessages idle deadline (the dead-
 // stream detector). OPENMESSAGE_RECEIVE_IDLE_SECS in seconds; 0/unset = libgm
 // default (30s). Set low only to force-exercise the reconnect path in tests.
@@ -65,6 +76,7 @@ func NewFromSession(sessionData *SessionData, logger zerolog.Logger) (*Client, e
 	cli := libgm.NewClient(authData, pushKeys, logger)
 	cli.DontMarkActive = passiveMode()
 	cli.ReportInactive = inactiveMode()
+	cli.SkipDittoPings = noPingsMode()
 	if d := receiveIdleTimeout(); d > 0 {
 		cli.ReceiveIdleTimeout = d
 	}
