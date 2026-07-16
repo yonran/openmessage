@@ -300,3 +300,32 @@ revert env to INACTIVE=1 + RECONCILE_SECS=120 (both paths still in the code).
   phone simultaneously, for the first time.
 - Run T (pending): probe after the first natural ~15-min reopen in no-pings
   mode (reassert path already validated by run Q under isActive=true).
+
+## PROBE INDEX (quick reference, all runs)
+| Probe | When (PT) | Daemon config at send | Result |
+|-------|-----------|----------------------|--------|
+| A-1334 | 07-14 13:35 | INACTIVE=1, pre-fix | not received → revealed the stall |
+| B-1405 | 07-14 14:05 | fresh conn | received via stream (~s) |
+| C-1414 | 07-14 14:13 | reconcile-fix build | received via reconcile |
+| D-1510 | 07-14 15:11 | stall window | diagnostics |
+| E-1553 | 07-14 15:53 | stall-mark build | diagnostics |
+| F-1558 | 07-14 15:58 | DROP_LONGPOLL, reconcile-only | received via reconcile |
+| G-1601 | 07-14 16:01 | normal restore | received |
+| H-1638 | 07-14 16:39 | idle=5s churn test | received through forced reconnects |
+| I-1704 | 07-14 17:05 | final clean build (idle-deadline+reconcile) | received ~10s |
+| J-1300 | 07-15 16:03 | INACTIVE=1 RECONCILE=120; bg TAB open | tab: streamed+acked; daemon: path ambiguous |
+| K-1608 | 07-15 16:08 | same | daemon stream did NOT deliver; reconcile tick 16:09:52 did |
+| L-1615 | 07-15 16:18 | same; bg tab open | PHONE VIBRATED with active tab present |
+| M-1624 | 07-15 16:24 | INACTIVE=0 RECONCILE=0, fresh connect | streamed ≤11s |
+| N-1644 | 07-15 16:43 | same, after 16:42 conn reset | NEVER delivered on reopened stream |
+| O-1647 | 07-15 16:46 | same | NEVER delivered; recovered by restart backfill |
+| P-1700 | 07-15 17:00 | + reassert-on-reopen (a1df7d9), fresh connect | streamed ≤30s |
+| Q-1713 | 07-15 17:12 | same, 1 min after 17:11 reopen+reassert | streamed ≤26s — reassert validated |
+| R-2341 | 07-15 23:41 | INACTIVE=1 RECONCILE=0 | RETRACTED — probe never actually sent (misclick) |
+| S-2352 | 07-15 23:51 | NO_PINGS=1 (SkipDittoPings), fresh connect | streamed ~5s AND phone vibrated — dual PASS |
+| T | 07-16 ~00:06 | NO_PINGS=1, after first reopen | pending |
+
+Config timeline 07-15: INACTIVE=1+RECONCILE=120 until 16:22 → INACTIVE=0+RECONCILE=0
+16:22–23:40 (phone silent per user; N/O lost pre-reassert; reassert deployed 16:59) →
+INACTIVE=1+RECONCILE=0 23:40–23:49 (untested, R retracted; receive path broken) →
+NO_PINGS=1 23:49– (run S dual pass).
