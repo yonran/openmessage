@@ -298,8 +298,10 @@ revert env to INACTIVE=1 + RECONCILE_SECS=120 (both paths still in the code).
   23:51:31 via stream (no reconcile), AND the phone vibrated (user-confirmed),
   ~90s after the connect-time SetActiveSession. Stream delivery + ringing
   phone simultaneously, for the first time.
-- Run T (pending): probe after the first natural ~15-min reopen in no-pings
-  mode (reassert path already validated by run Q under isActive=true).
+- Run T — PASS: stream reopened 00:02 (+ "Re-asserted active session" in debug
+  log); LABTEST-T-0008 sent 00:07:28 → in DB by 00:07:56 via the reopened
+  stream. No-pings mode survives reopens. VALIDATION COMPLETE — deployed
+  config: NO_PINGS=1, INACTIVE=0, RECONCILE_SECS=0.
 
 ## PROBE INDEX (quick reference, all runs)
 | Probe | When (PT) | Daemon config at send | Result |
@@ -323,7 +325,7 @@ revert env to INACTIVE=1 + RECONCILE_SECS=120 (both paths still in the code).
 | Q-1713 | 07-15 17:12 | same, 1 min after 17:11 reopen+reassert | streamed ≤26s — reassert validated |
 | R-2341 | 07-15 23:41 | INACTIVE=1 RECONCILE=0 | RETRACTED — probe never actually sent (misclick) |
 | S-2352 | 07-15 23:51 | NO_PINGS=1 (SkipDittoPings), fresh connect | streamed ~5s AND phone vibrated — dual PASS |
-| T | 07-16 ~00:06 | NO_PINGS=1, after first reopen | pending |
+| T-0008 | 07-16 00:07 | NO_PINGS=1, 5 min after 00:02 reopen+reassert | streamed ≤28s — no-pings mode survives reopens. FINAL |
 
 Config timeline 07-15: INACTIVE=1+RECONCILE=120 until 16:22 → INACTIVE=0+RECONCILE=0
 16:22–23:40 (phone silent per user; N/O lost pre-reassert; reassert deployed 16:59) →
