@@ -3,6 +3,8 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,18 @@ import (
 // its echo later confirms.
 const RequestTimeout = 35 * time.Second
 
+// receiveIdleTimeout overrides libgm's ReceiveMessages idle deadline (the dead-
+// stream detector). OPENMESSAGE_RECEIVE_IDLE_SECS in seconds; 0/unset = libgm
+// default (30s). Set low only to force-exercise the reconnect path in tests.
+func receiveIdleTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("OPENMESSAGE_RECEIVE_IDLE_SECS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 0
+}
+
 type Client struct {
 	GM     *libgm.Client
 	Logger zerolog.Logger
@@ -33,6 +47,9 @@ type Client struct {
 func newGMClient(authData *libgm.AuthData, pushKeys *libgm.PushKeys, logger zerolog.Logger) *libgm.Client {
 	cli := libgm.NewClient(authData, pushKeys, logger)
 	cli.SetRequestTimeout(RequestTimeout)
+	if d := receiveIdleTimeout(); d > 0 {
+		cli.ReceiveIdleTimeout = d
+	}
 	return cli
 }
 
