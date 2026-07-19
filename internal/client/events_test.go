@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -401,5 +402,68 @@ func TestHandleTyping_ResolvesParticipantName(t *testing.T) {
 	}
 	if !got.typing {
 		t.Fatal("typing = false, want true")
+	}
+}
+
+// dispatch routing for auth-expiry (401) deaths on the long-poll and ditto ping.
+// A 401 must go to OnAuthExpired (so the reconnect watchdog refreshes cookies)
+// and NOT fall through to OnConnectionLost, which would overwrite the
+// auth-expired status the watchdog keys its cookie-refresh decision on.
+func newAuthRoutingHandler(authHandled bool) (*EventHandler, *int, *int, *[]error) {
+	authCalls := 0
+	lostCalls := 0
+	var seen []error
+	h := &EventHandler{
+		Logger: zerolog.Nop(),
+		OnAuthExpired: func(err error) bool {
+			authCalls++
+			seen = append(seen, err)
+			return authHandled
+		},
+		OnConnectionLost: func() { lostCalls++ },
+	}
+	return h, &authCalls, &lostCalls, &seen
+}
+
+func TestListenFatalError_401RoutesToAuthExpired(t *testing.T) {
+	h, auth, lost, seen := newAuthRoutingHandler(true)
+	h.Handle(&events.ListenFatalError{Error: errors.New("http 401 while polling")})
+	if *auth != 1 {
+		t.Fatalf("OnAuthExpired calls = %d, want 1", *auth)
+	}
+	if *lost != 0 {
+		t.Fatalf("OnConnectionLost calls = %d, want 0 (handled as auth-expiry)", *lost)
+	}
+	if len(*seen) != 1 || (*seen)[0].Error() != "http 401 while polling" {
+		t.Fatalf("OnAuthExpired saw %v, want the 401 error", *seen)
+	}
+}
+
+func TestListenFatalError_TransientFallsBackToConnectionLost(t *testing.T) {
+	// OnAuthExpired declines (not an auth error) → fall back to OnConnectionLost.
+	h, auth, lost, _ := newAuthRoutingHandler(false)
+	h.Handle(&events.ListenFatalError{Error: errors.New("connection reset by peer")})
+	if *auth != 1 {
+		t.Fatalf("OnAuthExpired calls = %d, want 1 (consulted)", *auth)
+	}
+	if *lost != 1 {
+		t.Fatalf("OnConnectionLost calls = %d, want 1 (transient fallback)", *lost)
+	}
+}
+
+func TestPingFailed_401RoutesToAuthExpiredOnlyAfterThreshold(t *testing.T) {
+	h, auth, lost, _ := newAuthRoutingHandler(true)
+	// Below the 3-failure threshold: neither callback fires.
+	h.Handle(&events.PingFailed{Error: errors.New("HTTP 401: invalid authentication credentials"), ErrorCount: 2})
+	if *auth != 0 || *lost != 0 {
+		t.Fatalf("below threshold: auth=%d lost=%d, want 0/0", *auth, *lost)
+	}
+	// At the threshold: routed to auth-expiry, not connection-lost.
+	h.Handle(&events.PingFailed{Error: errors.New("HTTP 401: invalid authentication credentials"), ErrorCount: 3})
+	if *auth != 1 {
+		t.Fatalf("at threshold: OnAuthExpired calls = %d, want 1", *auth)
+	}
+	if *lost != 0 {
+		t.Fatalf("at threshold: OnConnectionLost calls = %d, want 0", *lost)
 	}
 }

@@ -40,7 +40,12 @@ func NewForPairing(logger zerolog.Logger) *Client {
 }
 
 func (c *Client) SessionData() (*SessionData, error) {
+	// json.Marshal walks AuthData.Cookies without locking; hold the read lock
+	// so a concurrent Set-Cookie rotation (UpdateCookiesFromResponse) can't
+	// mutate the map mid-marshal.
+	c.GM.AuthData.CookiesLock.RLock()
 	authJSON, err := json.Marshal(c.GM.AuthData)
+	c.GM.AuthData.CookiesLock.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("marshal auth data: %w", err)
 	}
