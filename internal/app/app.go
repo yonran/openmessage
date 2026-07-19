@@ -657,10 +657,19 @@ func (a *App) StartDeepBackfill() bool {
 }
 
 func (a *App) StartRecentReconcile(reason string) bool {
+	return a.StartRecentReconcileLimited(reason, recentReconcileConversationLimit)
+}
+
+// StartRecentReconcileLimited pulls the most-recent convLimit conversations via
+// the request/response API (ListConversations/FetchMessages) and stores any new
+// messages. This is the receive path for an inactive (isActive=false) client:
+// Google does not stream inbound messages to an inactive web client, so the
+// periodic caller pulls them; the listen-recovered caller uses the full limit.
+func (a *App) StartRecentReconcileLimited(reason string, convLimit int) bool {
 	if a.backfillRunning.Load() || !a.reconcileRunning.CompareAndSwap(false, true) {
 		return false
 	}
-	go a.reconcileRecentConversations(reason)
+	go a.reconcileRecentConversations(reason, convLimit)
 	return true
 }
 
