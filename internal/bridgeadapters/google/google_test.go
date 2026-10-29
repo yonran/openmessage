@@ -10,6 +10,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,6 +358,70 @@ func TestProbeWithoutProtocolActivityStillTimesOut(t *testing.T) {
 	defer cancel()
 	if _, probeErr := run.Probe(ctx); !errors.Is(probeErr, context.DeadlineExceeded) {
 		t.Fatalf("Probe error = %v, want deadline with no pinger or long-poll activity", probeErr)
+	}
+}
+
+// pinglessFakeTransport is a session under OPENMESSAGE_NO_PINGS.
+type pinglessFakeTransport struct {
+	fakeTransport
+	connected atomic.Bool
+}
+
+func (f *pinglessFakeTransport) SkipsDittoPings() bool { return true }
+
+func (f *pinglessFakeTransport) IsConnected() bool { return f.connected.Load() }
+
+func TestPinglessProbeUsesLongPollInsteadOfDittoPing(t *testing.T) {
+	host := newTestApp(t)
+	fake := &pinglessFakeTransport{}
+	fake.connected.Store(true)
+	a := newPinglessTestAdapter(t, host, fake)
+	run, err := a.Start(context.Background(), bridge.StartRequest{AccountID: "google-primary", Generation: 1}, nil)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { stopRun(t, run) })
+
+	liveness, err := run.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+	if liveness.Detail != "long_poll_connected" || liveness.AliveAt.IsZero() {
+		t.Fatalf("Probe() liveness = %+v, want long_poll_connected", liveness)
+	}
+	if n := fake.probeCount(); n != 0 {
+		t.Fatalf("NotifyDittoActivity calls = %d, want 0 under NO_PINGS", n)
+	}
+}
+
+func TestPinglessProbeWaitsForReopenThenReportsDown(t *testing.T) {
+	old := pinglessReconnectGrace
+	pinglessReconnectGrace = 1500 * time.Millisecond
+	t.Cleanup(func() { pinglessReconnectGrace = old })
+
+	host := newTestApp(t)
+	fake := &pinglessFakeTransport{}
+	a := newPinglessTestAdapter(t, host, fake)
+	run, err := a.Start(context.Background(), bridge.StartRequest{AccountID: "google-primary", Generation: 1}, nil)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { stopRun(t, run) })
+
+	// A reopen that lands within the grace counts as alive.
+	time.AfterFunc(200*time.Millisecond, func() { fake.connected.Store(true) })
+	if _, err := run.Probe(context.Background()); err != nil {
+		t.Fatalf("Probe() during reopen error = %v", err)
+	}
+
+	fake.connected.Store(false)
+	_, err = run.Probe(context.Background())
+	var opErr bridge.OpError
+	if !errors.As(err, &opErr) || opErr.Class != bridge.FailureTransient || opErr.Fingerprint != "google_probe_long_poll_down" {
+		t.Fatalf("Probe() with long-poll down error = %v, want transient google_probe_long_poll_down", err)
+	}
+	if n := fake.probeCount(); n != 0 {
+		t.Fatalf("NotifyDittoActivity calls = %d, want 0 under NO_PINGS", n)
 	}
 }
 
@@ -815,6 +880,15 @@ func newLegacyClient(t *testing.T) *client.Client {
 }
 
 func newTestAdapter(t *testing.T, host *app.App, fake *fakeTransport) *Adapter {
+	t.Helper()
+	a := New("google-primary", host, func() bool { return true })
+	a.newClient = func() (*client.Client, transportClient, error) {
+		return newLegacyClient(t), fake, nil
+	}
+	return a
+}
+
+func newPinglessTestAdapter(t *testing.T, host *app.App, fake *pinglessFakeTransport) *Adapter {
 	t.Helper()
 	a := New("google-primary", host, func() bool { return true })
 	a.newClient = func() (*client.Client, transportClient, error) {

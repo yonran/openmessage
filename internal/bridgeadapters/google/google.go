@@ -32,6 +32,23 @@ type transportClient interface {
 	NotifyDittoActivity() (<-chan *libgm.IncomingRPCMessage, error)
 }
 
+// pinglessTransport is implemented by a transport whose session must not send
+// NOTIFY_DITTO_ACTIVITY (OPENMESSAGE_NO_PINGS). Probe then judges liveness by
+// whether the long-poll is open instead of pinging.
+type pinglessTransport interface {
+	SkipsDittoPings() bool
+	IsConnected() bool
+}
+
+// pinglessReconnectGrace is how long Probe waits for a reopening long-poll
+// before reporting the link down. Under Policy.ProbeTimeout; a var for tests.
+var pinglessReconnectGrace = 45 * time.Second
+
+// gmTransport adapts *libgm.Client to pinglessTransport.
+type gmTransport struct{ *libgm.Client }
+
+func (t gmTransport) SkipsDittoPings() bool { return t.SkipDittoPings }
+
 type clientFactory func() (*client.Client, transportClient, error)
 
 // Adapter owns Google connection generations while leaving the legacy
@@ -93,7 +110,7 @@ func (a *Adapter) loadClient() (*client.Client, transportClient, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create Google client: %w", err)
 	}
-	return legacy, legacy.GM, nil
+	return legacy, gmTransport{legacy.GM}, nil
 }
 
 func (a *Adapter) Start(
@@ -367,6 +384,35 @@ func (r *run) Done() <-chan error { return r.done }
 func (r *run) Probe(ctx context.Context) (bridge.Liveness, error) {
 	if ctx == nil {
 		return bridge.Liveness{}, errors.New("google probe: nil context")
+	}
+	if gm, ok := r.transport.(pinglessTransport); ok && gm.SkipsDittoPings() {
+		// OPENMESSAGE_NO_PINGS: a NOTIFY_DITTO_ACTIVITY probe reports
+		// isActive=true, which re-suppresses the phone's ring for new texts
+		// (labnotebook runs J-S), so don't send one. libgm closes a stream that
+		// goes 30s without a frame (heartbeats are ~10s) and reconnects, so an
+		// open long-poll is itself recent proof the Google link is alive.
+		// IsConnected is briefly false while the long-poll reopens, and stays
+		// false through libgm's retry back-off after a failed reopen, so give a
+		// reconnect time to land before declaring the link down.
+		deadline := time.NewTimer(pinglessReconnectGrace)
+		defer deadline.Stop()
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for !gm.IsConnected() {
+			select {
+			case <-ctx.Done():
+				return bridge.Liveness{}, ctx.Err()
+			case <-deadline.C:
+				return bridge.Liveness{}, bridge.OpError{
+					Class:       bridge.FailureTransient,
+					Operation:   "probe",
+					Fingerprint: "google_probe_long_poll_down",
+					Cause:       errors.New("Google long-poll not connected"),
+				}
+			case <-tick.C:
+			}
+		}
+		return bridge.Liveness{AliveAt: time.Now(), Detail: "long_poll_connected"}, nil
 	}
 	response, err := r.transport.NotifyDittoActivity()
 	if err != nil {
