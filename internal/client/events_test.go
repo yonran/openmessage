@@ -300,9 +300,14 @@ func TestMaybePersistRotatedCookies(t *testing.T) {
 	}
 }
 
-// A CookiesUpdated rotation is saved at once, even inside the throttle window
-// that delays saves triggered by message and reconnect events.
+// CookiesUpdated rotations are saved within cookieRotationFlushDelay, even
+// inside the throttle window that delays saves triggered by message and
+// reconnect events, and a burst of them becomes one write.
 func TestCookiesUpdatedPersistsInsideThrottleWindow(t *testing.T) {
+	oldDelay := cookieRotationFlushDelay
+	cookieRotationFlushDelay = 50 * time.Millisecond
+	t.Cleanup(func() { cookieRotationFlushDelay = oldDelay })
+
 	authData := libgm.NewAuthData()
 	authData.SetCookies(map[string]string{"SID": "initial"})
 	gmClient := libgm.NewClient(authData, nil, zerolog.Nop())
@@ -316,23 +321,39 @@ func TestCookiesUpdatedPersistsInsideThrottleWindow(t *testing.T) {
 		PersistCookiesEvery: 5 * time.Minute,
 	}
 	handler.Handle(&events.ListenRecovered{})
+	sentinel := time.Unix(1, 0)
+	if err := os.Chtimes(sessionPath, sentinel, sentinel); err != nil {
+		t.Fatalf("set sentinel mtime: %v", err)
+	}
 
-	authData.SetCookies(map[string]string{"SID": "rotated"})
 	now = now.Add(time.Minute)
-	handler.Handle(&events.CookiesUpdated{})
+	for _, sid := range []string{"rotated-1", "rotated-2", "rotated-3"} {
+		authData.SetCookies(map[string]string{"SID": sid})
+		handler.Handle(&events.CookiesUpdated{})
+	}
+	if info, err := os.Stat(sessionPath); err != nil || !info.ModTime().Equal(sentinel) {
+		t.Fatalf("session rewritten before the flush delay (err=%v)", err)
+	}
 
-	sessionData, err := LoadSession(sessionPath)
-	if err != nil {
-		t.Fatalf("LoadSession(): %v", err)
+	savedSID := func() string {
+		sessionData, err := LoadSession(sessionPath)
+		if err != nil {
+			t.Fatalf("LoadSession(): %v", err)
+		}
+		var savedAuth struct {
+			Cookies map[string]string `json:"cookies"`
+		}
+		if err := json.Unmarshal(sessionData.AuthDataJSON, &savedAuth); err != nil {
+			t.Fatalf("unmarshal saved auth data: %v", err)
+		}
+		return savedAuth.Cookies["SID"]
 	}
-	var savedAuth struct {
-		Cookies map[string]string `json:"cookies"`
-	}
-	if err := json.Unmarshal(sessionData.AuthDataJSON, &savedAuth); err != nil {
-		t.Fatalf("unmarshal saved auth data: %v", err)
-	}
-	if savedAuth.Cookies["SID"] != "rotated" {
-		t.Fatalf("saved SID = %q, want rotated", savedAuth.Cookies["SID"])
+	deadline := time.Now().Add(2 * time.Second)
+	for savedSID() != "rotated-3" {
+		if time.Now().After(deadline) {
+			t.Fatalf("saved SID = %q, want rotated-3 after the flush delay", savedSID())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

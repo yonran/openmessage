@@ -45,10 +45,16 @@ type EventHandler struct {
 	OnGoogleAvatarCandidates func([]db.ContactAvatarCandidate)
 	OnPhoneRespondingChange  func(bool)
 
-	cookieSaveMu     sync.Mutex
-	nextCookieSaveAt time.Time
-	lastCookieHash   [32]byte
+	cookieSaveMu       sync.Mutex
+	nextCookieSaveAt   time.Time
+	lastCookieHash     [32]byte
+	cookieFlushPending bool
 }
+
+// cookieRotationFlushDelay coalesces CookiesUpdated saves. Google rotates a
+// cookie on nearly every response, so a sync burst would otherwise rewrite
+// session.json hundreds of times a minute. A var for tests.
+var cookieRotationFlushDelay = 10 * time.Second
 
 // cookieSaveRetryDivisor shortens the cookie-persist throttle after a failed
 // save. A transient failure then costs a fraction of the interval instead of a
@@ -417,17 +423,28 @@ func (h *EventHandler) handleAuthRefresh() {
 	h.Logger.Debug().Msg("Saved refreshed auth token")
 }
 
-// persistRotatedCookiesNow saves a Set-Cookie rotation as soon as libgm
-// reports it. Google invalidates superseded cookie values, and the rotation
-// can land on a quiet stretch with no message or reconnect event to trigger
-// maybePersistRotatedCookies for hours; a restart in that window would resume
-// from cookies Google no longer accepts. The hash check still skips a write
-// when nothing changed.
+// persistRotatedCookiesNow saves a Set-Cookie rotation shortly after libgm
+// reports it, coalescing a burst into one write after
+// cookieRotationFlushDelay. Google invalidates superseded cookie values, and
+// the rotation can land on a quiet stretch with no message or reconnect event
+// to trigger maybePersistRotatedCookies for hours; a restart in that window
+// would resume from cookies Google no longer accepts. The hash check still
+// skips a write when nothing changed.
 func (h *EventHandler) persistRotatedCookiesNow() {
 	h.cookieSaveMu.Lock()
-	h.nextCookieSaveAt = time.Time{}
+	if h.cookieFlushPending {
+		h.cookieSaveMu.Unlock()
+		return
+	}
+	h.cookieFlushPending = true
 	h.cookieSaveMu.Unlock()
-	h.maybePersistRotatedCookies()
+	time.AfterFunc(cookieRotationFlushDelay, func() {
+		h.cookieSaveMu.Lock()
+		h.cookieFlushPending = false
+		h.nextCookieSaveAt = time.Time{}
+		h.cookieSaveMu.Unlock()
+		h.maybePersistRotatedCookies()
+	})
 }
 
 func (h *EventHandler) maybePersistRotatedCookies() {
