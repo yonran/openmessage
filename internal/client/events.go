@@ -66,6 +66,8 @@ func (h *EventHandler) Handle(rawEvt any) {
 		h.handleConversation(evt)
 	case *events.AuthTokenRefreshed:
 		h.handleAuthRefresh()
+	case *events.CookiesUpdated:
+		h.persistRotatedCookiesNow()
 	case *events.PairSuccessful:
 		h.Logger.Info().Str("phone_id", evt.PhoneID).Msg("Pairing successful")
 	case *events.ListenFatalError:
@@ -413,6 +415,19 @@ func (h *EventHandler) handleAuthRefresh() {
 		return
 	}
 	h.Logger.Debug().Msg("Saved refreshed auth token")
+}
+
+// persistRotatedCookiesNow saves a Set-Cookie rotation as soon as libgm
+// reports it. Google invalidates superseded cookie values, and the rotation
+// can land on a quiet stretch with no message or reconnect event to trigger
+// maybePersistRotatedCookies for hours; a restart in that window would resume
+// from cookies Google no longer accepts. The hash check still skips a write
+// when nothing changed.
+func (h *EventHandler) persistRotatedCookiesNow() {
+	h.cookieSaveMu.Lock()
+	h.nextCookieSaveAt = time.Time{}
+	h.cookieSaveMu.Unlock()
+	h.maybePersistRotatedCookies()
 }
 
 func (h *EventHandler) maybePersistRotatedCookies() {

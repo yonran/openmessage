@@ -300,6 +300,42 @@ func TestMaybePersistRotatedCookies(t *testing.T) {
 	}
 }
 
+// A CookiesUpdated rotation is saved at once, even inside the throttle window
+// that delays saves triggered by message and reconnect events.
+func TestCookiesUpdatedPersistsInsideThrottleWindow(t *testing.T) {
+	authData := libgm.NewAuthData()
+	authData.SetCookies(map[string]string{"SID": "initial"})
+	gmClient := libgm.NewClient(authData, nil, zerolog.Nop())
+	now := time.Date(2026, time.October, 29, 12, 0, 0, 0, time.UTC)
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	handler := &EventHandler{
+		Logger:              zerolog.Nop(),
+		SessionPath:         sessionPath,
+		Client:              &Client{GM: gmClient, Logger: zerolog.Nop()},
+		Now:                 func() time.Time { return now },
+		PersistCookiesEvery: 5 * time.Minute,
+	}
+	handler.Handle(&events.ListenRecovered{})
+
+	authData.SetCookies(map[string]string{"SID": "rotated"})
+	now = now.Add(time.Minute)
+	handler.Handle(&events.CookiesUpdated{})
+
+	sessionData, err := LoadSession(sessionPath)
+	if err != nil {
+		t.Fatalf("LoadSession(): %v", err)
+	}
+	var savedAuth struct {
+		Cookies map[string]string `json:"cookies"`
+	}
+	if err := json.Unmarshal(sessionData.AuthDataJSON, &savedAuth); err != nil {
+		t.Fatalf("unmarshal saved auth data: %v", err)
+	}
+	if savedAuth.Cookies["SID"] != "rotated" {
+		t.Fatalf("saved SID = %q, want rotated", savedAuth.Cookies["SID"])
+	}
+}
+
 // A failed cookie save must retry well before the full persist interval (a
 // transient failure should not cost ~5 minutes of durability) while still
 // being throttled, and must leave the change-detect hash alone so the pending
